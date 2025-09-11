@@ -187,8 +187,16 @@ with gr.Blocks(css="""
         flex:2
     }
 """) as demo:
-    gr.Markdown("## 🤖 Data Analyst Chatbot for Postgres\nAsk questions in natural language → get SQL + insights.")
-
+    with gr.Row():
+        with gr.Column():
+            gr.Image(
+                value="https://cdn-icons-png.flaticon.com/512/4712/4712028.png",  # 🔵 Blue brain icon
+                show_label=False,
+                height=120
+            )
+        with gr.Column():
+            gr.Markdown("## 🤖 **Brainy Data Analyst Chatbot**\nAsk me questions in natural language → I’ll generate SQL + explain insights.")
+    
     with gr.Row():
         with gr.Column():
             gr.Markdown("### Ask a Question 💬")
@@ -197,8 +205,10 @@ with gr.Blocks(css="""
                 placeholder="e.g. How many survey responses were there last month?",
                 lines=3
             )
-            run_btn = gr.Button("▶️ Run")
-            clear_btn = gr.Button("🧹 Clear")
+            # 🟦 Put Run + Clear on the same row
+            with gr.Row():
+                run_btn = gr.Button("▶️ Run", variant="primary")
+                clear_btn = gr.Button("🧹 Clear")
         with gr.Column():
             output = gr.HTML(label="Output")
 
