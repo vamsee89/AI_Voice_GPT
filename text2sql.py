@@ -61,22 +61,20 @@ def hf_generate(prompt: str, max_new_tokens=300, temperature=0.2) -> str:
         "inputs": prompt,
         "parameters": {
             "max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-            "return_full_text": False
+            "temperature": temperature
         }
     }
     resp = requests.post(HF_URL, headers=headers, json=payload, timeout=60)
     resp.raise_for_status()
     data = resp.json()
 
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict) and "generated_text" in item:
-                return item["generated_text"]
+    if isinstance(data, list) and "generated_text" in data[0]:
+        return data[0]["generated_text"]
     elif isinstance(data, dict) and "generated_text" in data:
         return data["generated_text"]
+    else:
+        return str(data)
 
-    return str(data)
 
 # ----------------------------
 # Prompt Engineering
