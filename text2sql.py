@@ -195,7 +195,7 @@ with gr.Blocks(css="""
                 height=120
             )
         with gr.Column():
-            gr.Markdown("## 🤖 **Brainy Data Analyst Chatbot**\nAsk me questions in natural language → I’ll generate SQL + explain insights.")
+            gr.Markdown("## 🤖 🧠 **Brainy Data Analyst Chatbot**\nAsk me questions in natural language → I’ll generate SQL + explain insights.")
     
     with gr.Row():
         with gr.Column():
