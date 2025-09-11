@@ -137,9 +137,8 @@ columns_meta, samples_df = fetch_schema_and_samples()
 
 def answer_question(user_question: str):
     if not user_question.strip():
-        return "", "Please enter a question."
+        return "<div style='color:red'>⚠️ Please ask a question.</div>"
 
-    # SQL generation
     sql_prompt = build_sql_prompt(user_question, columns_meta, samples_df)
     raw = hf_generate(sql_prompt)
     sql_text = extract_sql_from_text(raw)
@@ -147,30 +146,54 @@ def answer_question(user_question: str):
     try:
         df = run_sql(sql_text)
     except Exception as e:
-        return sql_text, f"SQL execution error: {e}"
+        return f"""
+        <div style="background:#ffe6e6;padding:10px;border-radius:8px">
+        ❌ <b>SQL Error</b>: {e}<br><br>
+        <code>{sql_text}</code>
+        </div>
+        """
 
-    # Natural language explanation
     ans_prompt = build_answer_prompt(user_question, sql_text, df)
     try:
         explanation = hf_generate(ans_prompt, max_new_tokens=250, temperature=0.3)
     except Exception as e:
         explanation = f"Query executed but explanation failed: {e}"
 
-    return sql_text, explanation
+    # Format as chat-like card
+    return f"""
+    <div style="background:#f9f9f9;padding:15px;border-radius:12px;
+                box-shadow:0 2px 5px rgba(0,0,0,0.1)">
+        <div style="font-size:14px;color:#555;margin-bottom:8px">🧾 <b>Generated SQL</b></div>
+        <pre style="background:#272822;color:#f8f8f2;padding:10px;border-radius:8px;
+                    overflow-x:auto;font-size:13px">{sql_text}</pre>
+        <div style="font-size:14px;color:#555;margin-top:12px">💡 <b>Answer</b></div>
+        <div style="background:#e8f4ff;padding:10px;border-radius:8px;
+                    font-size:14px;line-height:1.5;color:#333">{explanation}</div>
+    </div>
+    """
 
 # ----------------------------
 # Gradio UI
 # ----------------------------
-with gr.Blocks(title="Postgres Data Analyst Chatbot") as demo:
-    gr.Markdown("## 🧠 Data Analyst Chatbot\nAsk questions in natural language, get SQL + explanation.")
-    question = gr.Textbox(label="Your Question")
-    sql_box = gr.Textbox(label="Generated SQL", lines=6, interactive=False)
-    answer_box = gr.Textbox(label="Answer", lines=8, interactive=False)
-    run_btn = gr.Button("Run")
-    clear_btn = gr.Button("Clear")
+with gr.Blocks(css="""
+    body {background:#f0f2f5}
+    .left-col {background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,0.1)}
+    .right-col {padding:20px}
+""") as demo:
+    gr.Markdown("## 🤖 Data Analyst Chatbot for Postgres\nAsk questions in natural language → get SQL + insights.")
 
-    run_btn.click(fn=answer_question, inputs=question, outputs=[sql_box, answer_box])
-    clear_btn.click(lambda: ("", "", ""), None, [question, sql_box, answer_box])
+    with gr.Row():
+        with gr.Column(scale=1, elem_classes="left-col"):
+            gr.Markdown("### Ask a Question 💬")
+            question = gr.Textbox(label="", placeholder="e.g. How many survey responses were there last month?", lines=3)
+            run_btn = gr.Button("▶️ Run", variant="primary")
+            clear_btn = gr.Button("🧹 Clear")
+        with gr.Column(scale=2, elem_classes="right-col"):
+            output = gr.HTML(label="Output")
+
+    run_btn.click(fn=answer_question, inputs=question, outputs=output)
+    clear_btn.click(lambda: "", None, output)
+    clear_btn.click(lambda: "", None, question)
 
 if __name__ == "__main__":
     demo.launch()
