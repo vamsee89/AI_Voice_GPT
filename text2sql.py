@@ -177,24 +177,30 @@ def answer_question(user_question: str):
 # ----------------------------
 with gr.Blocks(css="""
     body {background:#f0f2f5}
-    .left-col {background:#fff;padding:20px;border-radius:12px;
-               box-shadow:0 2px 6px rgba(0,0,0,0.1); flex:1}
-    .right-col {padding:20px; flex:2}
+    .gr-row {gap: 20px}
+    .gr-column:nth-child(1) {
+        background:#fff;padding:20px;border-radius:12px;
+        box-shadow:0 2px 6px rgba(0,0,0,0.1)
+    }
+    .gr-column:nth-child(2) {
+        padding:20px;
+    }
 """) as demo:
     gr.Markdown("## 🤖 Data Analyst Chatbot for Postgres\nAsk questions in natural language → get SQL + insights.")
 
-    with gr.Row():
-        with gr.Column(elem_classes="left-col"):
+    with gr.Row(equal_height=True):
+        with gr.Column(scale=1):
             gr.Markdown("### Ask a Question 💬")
             question = gr.Textbox(label="", placeholder="e.g. How many survey responses were there last month?", lines=3)
             run_btn = gr.Button("▶️ Run", variant="primary")
             clear_btn = gr.Button("🧹 Clear")
-        with gr.Column(elem_classes="right-col"):
+        with gr.Column(scale=2):
             output = gr.HTML(label="Output")
 
     run_btn.click(fn=answer_question, inputs=question, outputs=output)
     clear_btn.click(lambda: "", None, output)
     clear_btn.click(lambda: "", None, question)
+
 
 
 if __name__ == "__main__":
