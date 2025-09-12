@@ -115,6 +115,55 @@ RULES:
 Schema Samples:
 {json.dumps(sample_preview, indent=2)}
 
+### Examples:
+
+User: Which plans have the lowest average NPS?
+SQL:
+<sql>
+SELECT mi.plan, AVG(ms.nps_score) AS avg_nps, COUNT(*) AS total_surveys
+FROM {PG_SCHEMA}.member_survey_info ms
+JOIN {PG_SCHEMA}.member_info mi ON ms.member_id = mi.member_id
+GROUP BY mi.plan
+ORDER BY avg_nps ASC;
+</sql>
+
+User: Which counties had the most survey responses last month?
+SQL:
+<sql>
+SELECT mi.county, COUNT(*) AS total_surveys
+FROM {PG_SCHEMA}.member_survey_info ms
+JOIN {PG_SCHEMA}.member_info mi ON ms.member_id = mi.member_id
+WHERE ms.survey_date BETWEEN '2024-07-01' AND '2024-07-31'
+GROUP BY mi.county
+ORDER BY total_surveys DESC;
+</sql>
+
+User: How many promoters, passives, and detractors are there based on NPS score?
+SQL:
+<sql>
+SELECT 
+  CASE 
+    WHEN ms.nps_score > 6 THEN 'Promoter'
+    WHEN ms.nps_score < 5 THEN 'Detractor'
+    ELSE 'Neutral'
+  END AS nps_category,
+  COUNT(*) AS total
+FROM {PG_SCHEMA}.member_survey_info ms
+GROUP BY nps_category;
+</sql>
+
+User: Which business segment has the most detractors?
+SQL:
+<sql>
+SELECT mi.business_segment, COUNT(*) AS detractors
+FROM {PG_SCHEMA}.member_survey_info ms
+JOIN {PG_SCHEMA}.member_info mi ON ms.member_id = mi.member_id
+WHERE ms.nps_score < 5
+GROUP BY mi.business_segment
+ORDER BY detractors DESC;
+</sql>
+
+
 User Question:
 {user_question}
 """.strip()
