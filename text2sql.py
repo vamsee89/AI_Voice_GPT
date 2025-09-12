@@ -74,6 +74,7 @@ def hf_generate(prompt: str, max_new_tokens=300, temperature=0.2) -> str:
         return data["generated_text"]
     else:
         return str(data)
+        
 
 
 # ----------------------------
@@ -130,6 +131,27 @@ def extract_sql_from_text(txt: str) -> str:
                 return s if s.endswith(";") else s + ";"
     return txt.strip()
 
+def build_insights_prompt(user_question: str, sql_text: str, result_df: pd.DataFrame) -> str:
+    preview = result_df.head(15).to_dict(orient="records")
+    desc = result_df.describe(include="all").to_dict() if not result_df.empty else {}
+
+    return f"""
+You are a senior data analyst.
+The user asked: {user_question}
+The SQL used: {sql_text}
+Preview of results: {json.dumps(preview, default=str)}
+Basic stats: {json.dumps(desc, default=str)}
+
+Write a short section called 'Notable Findings' in bullet points.
+Focus on:
+- biggest differences (e.g., Plan A has 25% lower CSAT than average),
+- anomalies or outliers,
+- any obvious trend (if a date column is present).
+
+Keep it professional and concise.
+""".strip()
+
+
 # ----------------------------
 # Pipeline
 # ----------------------------
@@ -146,31 +168,27 @@ def answer_question(user_question: str):
     try:
         df = run_sql(sql_text)
     except Exception as e:
-        return f"""
-        <div style="background:#ffe6e6;padding:10px;border-radius:8px">
-        ❌ <b>SQL Error</b>: {e}<br><br>
-        <code>{sql_text}</code>
-        </div>
-        """
+        return f"<div style='background:#ffe6e6;padding:10px;border-radius:8px'>❌ SQL Error: {e}<br><br><code>{sql_text}</code></div>"
 
+    # Explanation
     ans_prompt = build_answer_prompt(user_question, sql_text, df)
-    try:
-        explanation = hf_generate(ans_prompt, max_new_tokens=250, temperature=0.3)
-    except Exception as e:
-        explanation = f"Query executed but explanation failed: {e}"
+    explanation = hf_generate(ans_prompt, max_new_tokens=250, temperature=0.3)
 
-    # Format as chat-like card
+    # Insights
+    insights_prompt = build_insights_prompt(user_question, sql_text, df)
+    insights = hf_generate(insights_prompt, max_new_tokens=250, temperature=0.4)
+
     return f"""
-    <div style="background:#f9f9f9;padding:15px;border-radius:12px;
-                box-shadow:0 2px 5px rgba(0,0,0,0.1)">
+    <div style="background:#f9f9f9;padding:15px;border-radius:12px;box-shadow:0 2px 5px rgba(0,0,0,0.1)">
         <div style="font-size:14px;color:#555;margin-bottom:8px">🧾 <b>Generated SQL</b></div>
-        <pre style="background:#272822;color:#f8f8f2;padding:10px;border-radius:8px;
-                    overflow-x:auto;font-size:13px">{sql_text}</pre>
+        <pre style="background:#272822;color:#f8f8f2;padding:10px;border-radius:8px;overflow-x:auto;font-size:13px">{sql_text}</pre>
         <div style="font-size:14px;color:#555;margin-top:12px">💡 <b>Answer</b></div>
-        <div style="background:#e8f4ff;padding:10px;border-radius:8px;
-                    font-size:14px;line-height:1.5;color:#333">{explanation}</div>
+        <div style="background:#e8f4ff;padding:10px;border-radius:8px;font-size:14px;line-height:1.5;color:#333">{explanation}</div>
+        <div style="font-size:14px;color:#555;margin-top:12px">✨ <b>Notable Findings</b></div>
+        <div style="background:#fff7e6;padding:10px;border-radius:8px;font-size:14px;line-height:1.5;color:#333">{insights}</div>
     </div>
     """
+
 
 # ----------------------------
 # Gradio UI
