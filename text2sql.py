@@ -32,25 +32,24 @@ def get_conn():
         host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD
     )
 
-def fetch_schema_and_samples(limit_rows: int = 8):
+def fetch_schemas_and_samples():
+    tables = ["member_survey_info", "member_info"]
+    result = {}
     with get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = %s AND table_name = %s
-            ORDER BY ordinal_position;
-        """, (PG_SCHEMA, PG_TABLE))
-        cols = cur.fetchall()
-        column_names = [c["column_name"] for c in cols]
+        for tbl in tables:
+            cur.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position;
+            """, (PG_SCHEMA, tbl))
+            cols = cur.fetchall()
+            cur.execute(f'SELECT * FROM "{PG_SCHEMA}"."{tbl}" LIMIT 5;')
+            rows = cur.fetchall()
+            df = pd.DataFrame(rows) if rows else pd.DataFrame([{}])
+            result[tbl] = {"cols": cols, "sample": df}
+    return result
 
-        cur.execute(f'SELECT * FROM "{PG_SCHEMA}"."{PG_TABLE}" LIMIT {limit_rows};')
-        rows = cur.fetchall()
-        df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=column_names)
-        return cols, df
-
-def run_sql(sql: str) -> pd.DataFrame:
-    with get_conn() as conn:
-        return pd.read_sql_query(sql, conn)
 
 # ----------------------------
 # Hugging Face Inference API
@@ -80,30 +79,31 @@ def hf_generate(prompt: str, max_new_tokens=300, temperature=0.2) -> str:
 # ----------------------------
 # Prompt Engineering
 # ----------------------------
-def build_sql_prompt(user_question: str, columns_meta, samples_df: pd.DataFrame) -> str:
-    col_lines = [f'- {c["column_name"]} ({c["data_type"]})' for c in columns_meta]
-    sample_json = samples_df.head(5).to_dict(orient="records")
-    today = date.today()
-    last_month_start = (today.replace(day=1) - relativedelta(months=1))
-    last_month_end = today.replace(day=1) - relativedelta(days=1)
+def build_sql_prompt(user_question: str, schema_dict):
+    table_descriptions = []
+    for tbl, data in schema_dict.items():
+        cols = [f'- {c["column_name"]} ({c["data_type"]})' for c in data["cols"]]
+        table_descriptions.append(f"Table {tbl}:\n" + "\n".join(cols))
 
     return f"""
-You are an expert SQL analyst. 
-Write a single valid PostgreSQL SELECT query for the table "{PG_SCHEMA}"."{PG_TABLE}".
+You are an expert SQL analyst.
+We have two tables in schema "{PG_SCHEMA}":
+
+{chr(10).join(table_descriptions)}
+
+Relationships:
+- member_survey_info.member_id = member_info.member_id
+
+RULES:
 - Use ONLY existing columns.
-- No schema changes, no DML, only SELECT.
-- If user says "last month", interpret as {last_month_start.isoformat()} to {last_month_end.isoformat()}.
+- Use JOINs when attributes are in member_info but measures are in member_survey_info.
+- If question asks "which plan/county/business segment has ...", join survey table with member_info.
+- Return only SELECT queries inside <sql>...</sql>.
 
-Schema:
-{chr(10).join(col_lines)}
-
-Sample data:
-{json.dumps(sample_json, indent=2)}
-
-Question: {user_question}
-
-Return ONLY the SQL inside <sql>...</sql>.
+User Question:
+{user_question}
 """.strip()
+
 
 def build_answer_prompt(user_question: str, sql_text: str, result_df: pd.DataFrame) -> str:
     preview = result_df.head(5).to_dict(orient="records")
