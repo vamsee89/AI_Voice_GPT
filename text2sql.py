@@ -32,9 +32,9 @@ def get_conn():
         host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD
     )
 
-def fetch_schemas_and_samples():
+def fetch_schema_and_samples(limit_rows: int = 8):
     tables = ["member_survey_info", "member_info"]
-    result = {}
+    schemas = {}
     with get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         for tbl in tables:
             cur.execute("""
@@ -44,11 +44,15 @@ def fetch_schemas_and_samples():
                 ORDER BY ordinal_position;
             """, (PG_SCHEMA, tbl))
             cols = cur.fetchall()
-            cur.execute(f'SELECT * FROM "{PG_SCHEMA}"."{tbl}" LIMIT 5;')
+            column_names = [c["column_name"] for c in cols]
+
+            cur.execute(f'SELECT * FROM "{PG_SCHEMA}"."{tbl}" LIMIT {limit_rows};')
             rows = cur.fetchall()
-            df = pd.DataFrame(rows) if rows else pd.DataFrame([{}])
-            result[tbl] = {"cols": cols, "sample": df}
-    return result
+            df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=column_names)
+
+            schemas[tbl] = {"cols": cols, "sample": df}
+    return schemas
+
 
 
 # ----------------------------
@@ -79,11 +83,17 @@ def hf_generate(prompt: str, max_new_tokens=300, temperature=0.2) -> str:
 # ----------------------------
 # Prompt Engineering
 # ----------------------------
-def build_sql_prompt(user_question: str, schema_dict):
+def build_sql_prompt(user_question: str, schemas: dict) -> str:
     table_descriptions = []
-    for tbl, data in schema_dict.items():
+    for tbl, data in schemas.items():
         cols = [f'- {c["column_name"]} ({c["data_type"]})' for c in data["cols"]]
         table_descriptions.append(f"Table {tbl}:\n" + "\n".join(cols))
+
+    # use small sample preview for context
+    sample_preview = {
+        tbl: data["sample"].head(3).to_dict(orient="records")
+        for tbl, data in schemas.items()
+    }
 
     return f"""
 You are an expert SQL analyst.
@@ -96,13 +106,19 @@ Relationships:
 
 RULES:
 - Use ONLY existing columns.
-- Use JOINs when attributes are in member_info but measures are in member_survey_info.
-- If question asks "which plan/county/business segment has ...", join survey table with member_info.
-- Return only SELECT queries inside <sql>...</sql>.
+- If question references survey metrics (nps_score, csat_score, survey_date, survey_id, comments), those are in member_survey_info (alias ms).
+- If question references member attributes (plan, county, business_segment, etc.), those are in member_info (alias mi).
+- Always JOIN ms with mi on member_id when question needs both survey metrics and member attributes.
+- Use table aliases: ms for member_survey_info, mi for member_info.
+- Return only the SQL inside <sql>...</sql>.
+
+Schema Samples:
+{json.dumps(sample_preview, indent=2)}
 
 User Question:
 {user_question}
 """.strip()
+
 
 
 def build_answer_prompt(user_question: str, sql_text: str, result_df: pd.DataFrame) -> str:
