@@ -168,6 +168,18 @@ User Question:
 {user_question}
 """.strip()
 
+def enforce_types(sql: str, schemas: dict) -> str:
+    for tbl, data in schemas.items():
+        for c in data["cols"]:
+            col = c["column_name"]
+            dtype = c["data_type"].lower()
+            # enforce quoting for text
+            if "char" in dtype or "text" in dtype:
+                sql = re.sub(rf"({col}\s*[=<>]\s*)(\d+)(\b)", r"\1'\2'\3", sql, flags=re.IGNORECASE)
+            # enforce no quotes for integer/numeric
+            elif "int" in dtype or "numeric" in dtype or "double" in dtype:
+                sql = re.sub(rf"({col}\s*[=<>]\s*)'(\d+)'", r"\1\2", sql, flags=re.IGNORECASE)
+    return sql
 
 
 def build_answer_prompt(user_question: str, sql_text: str, result_df: pd.DataFrame) -> str:
