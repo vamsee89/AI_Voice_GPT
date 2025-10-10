@@ -5,15 +5,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
 import base64
-from huggingface_hub import InferenceClient
+import requests
 import json
 import re
 from typing import Optional, Tuple
 import numpy as np
 
-# Initialize Hugging Face Inference Client
-# You'll need to set your HF token as an environment variable or pass it directly
-client = InferenceClient(token="YOUR_HF_TOKEN_HERE")
+# API Configuration
+API_ENDPOINT = "https://your-domain.com/llama-4-scout-17B-16E-Instruct/v1/chat/completions"
+API_HEADERS = {"Authorization": "Basic cccccccccc", "Content-Type": "application/json"}
 
 class CSVChatbot:
     def __init__(self):
@@ -90,7 +90,7 @@ You can now ask questions about the data or request visualizations!
         return True, "Safe"
     
     def generate_llm_response(self, user_query: str) -> str:
-        """Generate response using Llama 4 via HuggingFace Inference API"""
+        """Generate response using Llama 4 via internal API endpoint"""
         
         if self.df is None:
             return "Please upload a CSV file first before asking questions."
@@ -114,30 +114,57 @@ Guidelines:
 1. Provide clear, concise answers about the data
 2. If the user asks for visualization, suggest appropriate chart types
 3. For data analysis questions, be specific and reference actual data
-4. If you need to suggest code, use pandas and matplotlib/seaborn
+4. If you need to suggest code, use pandas and plotly
 5. Always explain your reasoning
 6. If the query is unclear, ask for clarification
 
 Respond to the user's query in a helpful and informative way."""
 
         try:
-            # Call Llama 4 via HuggingFace Inference API
-            response = ""
-            for message in client.chat_completion(
-                model="meta-llama/Llama-3.3-70B-Instruct",  # Using Llama 3.3 as Llama 4 may not be released yet
-                messages=[
-                    {"role": "system", "content": "You are a helpful data analyst assistant specialized in CSV data analysis."},
-                    {"role": "user", "content": context}
+            # Prepare the request payload
+            payload = {
+                "messages": [
+                    {
+                        "role": "system", 
+                        "content": "You are a helpful data analyst assistant specialized in CSV data analysis."
+                    },
+                    {
+                        "role": "user", 
+                        "content": context
+                    }
                 ],
-                max_tokens=1000,
-                stream=True,
-            ):
-                response += message.choices[0].delta.content or ""
+                "max_tokens": 1000,
+                "temperature": 0.7,
+                "stream": False
+            }
             
-            return response
+            # Make API request
+            response = requests.post(
+                API_ENDPOINT,
+                headers=API_HEADERS,
+                json=payload,
+                timeout=30
+            )
             
+            # Check if request was successful
+            if response.status_code == 200:
+                response_data = response.json()
+                
+                # Extract the assistant's message from response
+                # Adjust this based on your API's response format
+                if "choices" in response_data and len(response_data["choices"]) > 0:
+                    return response_data["choices"][0]["message"]["content"]
+                else:
+                    return "Received empty response from API."
+            else:
+                return f"API Error ({response.status_code}): {response.text}"
+            
+        except requests.exceptions.Timeout:
+            return "Request timed out. Please try again."
+        except requests.exceptions.RequestException as e:
+            return f"Error connecting to API: {str(e)}"
         except Exception as e:
-            return f"Error generating response: {str(e)}\n\nPlease check your HuggingFace token and API access."
+            return f"Error generating response: {str(e)}"
     
     def execute_analysis(self, query: str) -> Tuple[str, Optional[go.Figure]]:
         """Execute data analysis based on user query"""
@@ -365,7 +392,7 @@ def chat(message, history):
 with gr.Blocks(theme=gr.themes.Soft(), title="CSV Data Chatbot") as demo:
     gr.Markdown("""
     # 📊 CSV Data Analysis Chatbot
-    ### Powered by Llama 4 & Hugging Face
+    ### Powered by Llama 4 Scout (Internal API)
     
     Upload your CSV file and interact with your data using natural language!
     """)
