@@ -2,17 +2,19 @@ import gradio as gr
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests, json, re, numpy as np, socket, traceback
+import requests, json, re, numpy as np, traceback
 from typing import Optional, Tuple
 
+
 # ============================================================
-# ⚙️  API Configuration
+# ⚙️  API CONFIGURATION
 # ============================================================
 API_ENDPOINT = "https://your-domain.com/llama-4-scout-17B-16E-Instruct/v1/chat/completions"
 API_HEADERS = {"Authorization": "Basic cccccccccc", "Content-Type": "application/json"}
 
+
 # ============================================================
-# 🧠  CSV Chatbot
+# 🧠  CSV CHATBOT CORE
 # ============================================================
 class CSVChatbot:
     def __init__(self):
@@ -20,6 +22,7 @@ class CSVChatbot:
         self.df_info = None
         self.conversation_history = []
 
+    # --------------------------------------------------------
     def load_csv(self, file) -> Tuple[str, str]:
         """Load and summarize CSV"""
         try:
@@ -32,7 +35,6 @@ class CSVChatbot:
                 "missing": self.df.isnull().sum().to_dict()
             }
 
-            # Escaped markdown block for compatibility
             summary = (
                 f"✅ CSV Loaded!\n\n"
                 f"**Rows:** {self.df.shape[0]}  \n"
@@ -44,9 +46,11 @@ class CSVChatbot:
             )
             return summary, "CSV file loaded successfully!"
         except Exception as e:
-            return "❌ Error loading CSV: %s" % str(e), "Error loading file"
+            return f"❌ Error loading CSV: {e}", "Error loading file"
 
+    # --------------------------------------------------------
     def is_safe_query(self, query: str) -> Tuple[bool, str]:
+        """Detect dangerous operations"""
         patterns = [
             r'import\s+os', r'subprocess', r'eval\s*\(', r'exec\s*\(',
             r'socket', r'open\s*\(', r'pickle', r'system', r';', r'&&', r'`'
@@ -56,13 +60,19 @@ class CSVChatbot:
                 return False, "⚠️ Potentially unsafe operation detected."
         return True, "Safe"
 
+    # --------------------------------------------------------
     def _compress_context(self) -> str:
+        """Compact summary for LLM"""
         if not self.df_info:
             return ""
         head = self.df_info['head']
         sample_rows = "\n".join(head.split("\n")[:8])
-        return "Columns: %s\n\nSample data:\n%s" % (", ".join(self.df_info['columns']), sample_rows)
+        return "Columns: %s\n\nSample data:\n%s" % (
+            ", ".join(self.df_info['columns']),
+            sample_rows,
+        )
 
+    # --------------------------------------------------------
     def generate_llm_response(self, query: str) -> str:
         if self.df is None:
             return "Please upload a CSV first."
@@ -73,7 +83,6 @@ class CSVChatbot:
             % (self.df_info['shape'][0], self.df_info['shape'][1], self._compress_context(), query)
         )
 
-        # preserve last 3 conversations
         history = self.conversation_history[-3:]
         messages = [{"role": "system", "content": "You analyze CSV data and explain insights clearly."}]
         for turn in history:
@@ -95,7 +104,9 @@ class CSVChatbot:
             traceback.print_exc()
             return "Error contacting API: %s" % str(e)
 
+    # --------------------------------------------------------
     def execute_analysis(self, query: str) -> Tuple[str, Optional[go.Figure]]:
+        """Run query + optional plot"""
         if self.df is None:
             return "Please upload a CSV first.", None
 
@@ -113,7 +124,9 @@ class CSVChatbot:
             return llm_resp, fig
         return llm_resp, None
 
+    # --------------------------------------------------------
     def auto_generate_plot(self, query: str) -> Optional[go.Figure]:
+        """Heuristic auto-plot generator"""
         try:
             q = query.lower()
             num_cols = self.df.select_dtypes(include=[np.number]).columns
@@ -156,9 +169,10 @@ class CSVChatbot:
 
 
 # ============================================================
-# 🖥️  Gradio Interface
+# 🖥️  GRADIO UI + CALLBACKS
 # ============================================================
 chatbot = CSVChatbot()
+
 
 def upload_file(file):
     if file is None:
@@ -166,30 +180,42 @@ def upload_file(file):
     summary, status = chatbot.load_csv(file)
     return summary, status, [], gr.update(value=None)
 
+
 def chat(message, history):
     if chatbot.df is None:
         return history + [[message, "⚠️ Please upload a CSV file first."]], gr.update(value=None)
     reply, fig = chatbot.execute_analysis(message)
     return history + [[message, reply]], fig
 
+
 def clear_all():
     return [], gr.update(value=None)
 
+
 with gr.Blocks(theme=gr.themes.Soft(), title="CSV Data Chatbot") as demo:
-    gr.Markdown("# 📊 CSV Data Analysis Chatbot\n### 🤖 Powered by Llama-4 Scout (Internal API)")
+    gr.Markdown("# 📊 CSV Data Analysis Chatbot\n### 🤖 Powered by Llama-4 Scout API")
+
     with gr.Row():
         with gr.Column(scale=1):
             file_upload = gr.File(label="📁 Upload CSV File", file_types=[".csv"])
             upload_btn = gr.Button("Load CSV", variant="primary")
-            dataset_info = gr.Textbox(value="", label="📄 Dataset Summary", lines=15, max_lines=20, interactive=False)
+
+            dataset_info = gr.Textbox(
+                value="", label="📄 Dataset Summary",
+                lines=15, max_lines=20, interactive=True
+            )
         with gr.Column(scale=2):
-            chatbot_ui = gr.Chatbot(label="Chat with your Data", height=400)
-            plot_output = gr.Plot(label="Visualization")
-            msg_input = gr.Textbox(value="", label="💬 Ask a question", placeholder="e.g. 'Show histogram of sales'", lines=2)
+            chatbot_ui = gr.Chatbot(label="Chat with your Data", height=400, value=[])
+            plot_output = gr.Plot(label="Visualization", value=None)
+            msg_input = gr.Textbox(
+                value="", label="💬 Ask a question",
+                placeholder="e.g. 'Show histogram of sales'", lines=2
+            )
             with gr.Row():
                 submit_btn = gr.Button("🚀 Submit", variant="primary")
                 clear_btn = gr.Button("🧹 Clear Chat")
-    status_text = gr.Textbox(value="", label="Status", interactive=False)
+
+    status_text = gr.Textbox(value="", label="Status", interactive=True)
 
     upload_btn.click(upload_file, inputs=[file_upload],
                      outputs=[dataset_info, status_text, chatbot_ui, plot_output])
@@ -199,21 +225,9 @@ with gr.Blocks(theme=gr.themes.Soft(), title="CSV Data Chatbot") as demo:
                      outputs=[chatbot_ui, plot_output]).then(lambda: "", outputs=[msg_input])
     clear_btn.click(clear_all, outputs=[chatbot_ui, plot_output])
 
-# ============================================================
-# 🚀  Launch Helper
-# ============================================================
-def find_free_port(start=7860, end=7890):
-    for port in range(start, end):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("localhost", port)) != 0:
-                return port
-    raise RuntimeError("No free ports found")
 
+# ============================================================
+# 🚀  LAUNCH (LOCAL ONLY)
+# ============================================================
 if __name__ == "__main__":
-    port = find_free_port()
-    print("Launching on port %d..." % port)
-    try:
-        demo.launch(server_name="0.0.0.0", server_port=port, share=False)
-    except Exception as e:
-        print("Localhost failed: %s\nRetrying with share=True..." % e)
-        demo.launch(share=True)
+    demo.launch(server_name="127.0.0.1", share=False, inbrowser=True)
