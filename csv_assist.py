@@ -20,7 +20,6 @@ class CSVChatbot:
         self.df_info = None
         self.conversation_history = []
 
-    # --------------------------------------------------------
     def load_csv(self, file) -> Tuple[str, str]:
         """Load and summarize CSV"""
         try:
@@ -33,63 +32,51 @@ class CSVChatbot:
                 "missing": self.df.isnull().sum().to_dict()
             }
 
-            # use escaped backticks so it copies cleanly
-            summary = f"""✅ CSV Loaded!
-
-**Rows:** {self.df.shape[0]}  
-**Columns:** {self.df.shape[1]}  
-**Names:** {', '.join(self.df.columns)}
-
-**Missing Values:**
-{chr(10).join([f"- {k}: {v}" for k, v in self.df_info['missing'].items() if v>0]) or "No missing values"}
-
-**Preview:**
-\\`\\`\\`text
-{self.df_info['head']}
-\\`\\`\\`
-"""
+            # Escaped markdown block for compatibility
+            summary = (
+                f"✅ CSV Loaded!\n\n"
+                f"**Rows:** {self.df.shape[0]}  \n"
+                f"**Columns:** {self.df.shape[1]}  \n"
+                f"**Names:** {', '.join(self.df.columns)}\n\n"
+                f"**Missing Values:**\n"
+                f"{chr(10).join([f'- {k}: {v}' for k, v in self.df_info['missing'].items() if v>0]) or 'No missing values'}\n\n"
+                f"**Preview:**\n```text\n{self.df_info['head']}\n```"
+            )
             return summary, "CSV file loaded successfully!"
         except Exception as e:
-            return f"❌ Error loading CSV: {e}", "Error loading file"
+            return "❌ Error loading CSV: %s" % str(e), "Error loading file"
 
-    # --------------------------------------------------------
     def is_safe_query(self, query: str) -> Tuple[bool, str]:
-        """Check for malicious code or shell access"""
         patterns = [
-            r'import\\s+os', r'subprocess', r'eval\\s*\\(', r'exec\\s*\\(',
-            r'socket', r'open\\s*\\(', r'pickle', r'system', r';', r'&&', r'`'
+            r'import\s+os', r'subprocess', r'eval\s*\(', r'exec\s*\(',
+            r'socket', r'open\s*\(', r'pickle', r'system', r';', r'&&', r'`'
         ]
         for p in patterns:
             if re.search(p, query, re.I):
                 return False, "⚠️ Potentially unsafe operation detected."
         return True, "Safe"
 
-    # --------------------------------------------------------
     def _compress_context(self) -> str:
-        """Generate concise dataset context for LLM"""
         if not self.df_info:
             return ""
         head = self.df_info['head']
-        sample_rows = "\\n".join(head.split("\\n")[:8])
-        return f"Columns: {', '.join(self.df_info['columns'])}\\n\\nSample data:\\n{sample_rows}"
+        sample_rows = "\n".join(head.split("\n")[:8])
+        return "Columns: %s\n\nSample data:\n%s" % (", ".join(self.df_info['columns']), sample_rows)
 
-    # --------------------------------------------------------
     def generate_llm_response(self, query: str) -> str:
-        """Send contextual question to LLM"""
         if self.df is None:
             return "Please upload a CSV first."
 
-        context = f"""
-You are a data analyst assistant. The dataset has {self.df_info['shape'][0]} rows and {self.df_info['shape'][1]} columns.
-{self._compress_context()}
+        context = (
+            "You are a data analyst assistant. The dataset has %d rows and %d columns.\n"
+            "%s\n\nUser Query: %s"
+            % (self.df_info['shape'][0], self.df_info['shape'][1], self._compress_context(), query)
+        )
 
-User Query: {query}
-"""
-
-        # Keep short memory
-        recent = self.conversation_history[-4:]
+        # preserve last 3 conversations
+        history = self.conversation_history[-3:]
         messages = [{"role": "system", "content": "You analyze CSV data and explain insights clearly."}]
-        for turn in recent:
+        for turn in history:
             messages.append({"role": "user", "content": turn["user"]})
             messages.append({"role": "assistant", "content": turn["assistant"]})
         messages.append({"role": "user", "content": context})
@@ -103,14 +90,12 @@ User Query: {query}
                 msg = data["choices"][0]["message"]["content"]
                 self.conversation_history.append({"user": query, "assistant": msg})
                 return msg
-            return f"API Error {r.status_code}: {r.text}"
+            return "API Error %d: %s" % (r.status_code, r.text)
         except Exception as e:
             traceback.print_exc()
-            return f"Error contacting API: {e}"
+            return "Error contacting API: %s" % str(e)
 
-    # --------------------------------------------------------
     def execute_analysis(self, query: str) -> Tuple[str, Optional[go.Figure]]:
-        """Generate LLM response and optional visualization"""
         if self.df is None:
             return "Please upload a CSV first.", None
 
@@ -119,17 +104,16 @@ User Query: {query}
             return msg, None
 
         llm_resp = self.generate_llm_response(query)
-        viz_keywords = ['plot','chart','graph','visual','hist','scatter','bar',
-                        'line','box','pie','heatmap','correlation','3d','violin','sunburst']
-
+        viz_keywords = [
+            'plot','chart','graph','visual','hist','scatter','bar',
+            'line','box','pie','heatmap','correlation','3d','violin','sunburst'
+        ]
         if any(k in query.lower() for k in viz_keywords):
             fig = self.auto_generate_plot(query)
             return llm_resp, fig
         return llm_resp, None
 
-    # --------------------------------------------------------
     def auto_generate_plot(self, query: str) -> Optional[go.Figure]:
-        """Heuristic visualization generator"""
         try:
             q = query.lower()
             num_cols = self.df.select_dtypes(include=[np.number]).columns
@@ -137,18 +121,19 @@ User Query: {query}
             fig = None
 
             if 'hist' in q and len(num_cols):
-                fig = px.histogram(self.df, x=num_cols[0], nbins=30, title=f"Distribution of {num_cols[0]}")
+                fig = px.histogram(self.df, x=num_cols[0], nbins=30, title="Distribution of %s" % num_cols[0])
             elif 'scatter' in q and len(num_cols) >= 2:
                 color = cat_cols[0] if len(cat_cols) else None
                 fig = px.scatter(self.df, x=num_cols[0], y=num_cols[1], color=color)
-            elif 'bar' in q and len(cat_cols):
+            elif ('bar' in q or 'count' in q) and len(cat_cols):
                 vc = self.df[cat_cols[0]].value_counts().head(10)
-                fig = px.bar(x=vc.index, y=vc.values, title=f"Count of {cat_cols[0]}")
+                fig = px.bar(x=vc.index, y=vc.values, title="Count of %s" % cat_cols[0])
             elif 'line' in q and len(num_cols):
-                fig = px.line(self.df, y=num_cols[0], title=f"Trend of {num_cols[0]}")
+                fig = px.line(self.df, y=num_cols[0], title="Trend of %s" % num_cols[0])
             elif 'box' in q and len(num_cols):
-                fig = go.Figure([go.Box(y=self.df[c], name=c) for c in num_cols[:5]])
-            elif 'correlation' in q or 'heatmap' in q and len(num_cols) > 1:
+                traces = [go.Box(y=self.df[c], name=c) for c in num_cols[:5]]
+                fig = go.Figure(data=traces)
+            elif ('correlation' in q or 'heatmap' in q) and len(num_cols) > 1:
                 corr = self.df[num_cols].corr()
                 fig = px.imshow(corr, text_auto='.2f', color_continuous_scale='RdBu_r')
             elif 'pie' in q and len(cat_cols):
@@ -157,7 +142,8 @@ User Query: {query}
             elif '3d' in q and len(num_cols) >= 3:
                 fig = px.scatter_3d(self.df, x=num_cols[0], y=num_cols[1], z=num_cols[2])
             elif 'violin' in q and len(num_cols):
-                fig = go.Figure([go.Violin(y=self.df[c], name=c) for c in num_cols[:5]])
+                traces = [go.Violin(y=self.df[c], name=c) for c in num_cols[:5]]
+                fig = go.Figure(data=traces)
             elif 'sunburst' in q and len(cat_cols) >= 2:
                 fig = px.sunburst(self.df, path=[cat_cols[0], cat_cols[1]])
 
@@ -176,65 +162,42 @@ chatbot = CSVChatbot()
 
 def upload_file(file):
     if file is None:
-        return "Please upload a file", "No file uploaded", None, None
+        return "Please upload a file", "No file uploaded", [], gr.update(value=None)
     summary, status = chatbot.load_csv(file)
-    return summary, status, None, None
+    return summary, status, [], gr.update(value=None)
 
 def chat(message, history):
     if chatbot.df is None:
-        return history + [[message, "⚠️ Please upload a CSV file first."]], None
+        return history + [[message, "⚠️ Please upload a CSV file first."]], gr.update(value=None)
     reply, fig = chatbot.execute_analysis(message)
     return history + [[message, reply]], fig
 
+def clear_all():
+    return [], gr.update(value=None)
 
-# ============================================================
-# 💡  UI Layout
-# ============================================================
 with gr.Blocks(theme=gr.themes.Soft(), title="CSV Data Chatbot") as demo:
-    gr.Markdown("""
-    # 📊 CSV Data Analysis Chatbot  
-    ### 🤖 Powered by Llama-4 Scout (Internal API)
-    Upload your CSV and chat with your dataset — ask questions or request charts!
-    """)
-
+    gr.Markdown("# 📊 CSV Data Analysis Chatbot\n### 🤖 Powered by Llama-4 Scout (Internal API)")
     with gr.Row():
         with gr.Column(scale=1):
             file_upload = gr.File(label="📁 Upload CSV File", file_types=[".csv"])
             upload_btn = gr.Button("Load CSV", variant="primary")
-
-            dataset_info = gr.Textbox(value="", label="📄 Dataset Summary",
-                                      lines=15, max_lines=20, interactive=False)
+            dataset_info = gr.Textbox(value="", label="📄 Dataset Summary", lines=15, max_lines=20, interactive=False)
         with gr.Column(scale=2):
             chatbot_ui = gr.Chatbot(label="Chat with your Data", height=400)
             plot_output = gr.Plot(label="Visualization")
-
-            msg_input = gr.Textbox(
-                label="💬 Ask a question",
-                placeholder="e.g. 'Show me a histogram of revenue' or 'What’s the average age?'",
-                lines=2
-            )
+            msg_input = gr.Textbox(value="", label="💬 Ask a question", placeholder="e.g. 'Show histogram of sales'", lines=2)
             with gr.Row():
                 submit_btn = gr.Button("🚀 Submit", variant="primary")
                 clear_btn = gr.Button("🧹 Clear Chat")
-
     status_text = gr.Textbox(value="", label="Status", interactive=False)
 
-    gr.Markdown("""
-    ### 💡 Example Questions
-    - "Show the first 10 rows"  
-    - "Create a histogram of revenue"  
-    - "Show correlation heatmap"  
-    - "Plot a scatter of Age vs Salary"
-    """)
-
-    # Event wiring
     upload_btn.click(upload_file, inputs=[file_upload],
                      outputs=[dataset_info, status_text, chatbot_ui, plot_output])
     submit_btn.click(chat, inputs=[msg_input, chatbot_ui],
                      outputs=[chatbot_ui, plot_output]).then(lambda: "", outputs=[msg_input])
     msg_input.submit(chat, inputs=[msg_input, chatbot_ui],
                      outputs=[chatbot_ui, plot_output]).then(lambda: "", outputs=[msg_input])
-    clear_btn.click(lambda: (None, None), outputs=[chatbot_ui, plot_output])
+    clear_btn.click(clear_all, outputs=[chatbot_ui, plot_output])
 
 # ============================================================
 # 🚀  Launch Helper
@@ -248,9 +211,9 @@ def find_free_port(start=7860, end=7890):
 
 if __name__ == "__main__":
     port = find_free_port()
-    print(f"🔍 Launching on port {port}...")
+    print("Launching on port %d..." % port)
     try:
         demo.launch(server_name="0.0.0.0", server_port=port, share=False)
     except Exception as e:
-        print(f"⚠️ Localhost failed: {e}\\nRetrying with share=True...")
+        print("Localhost failed: %s\nRetrying with share=True..." % e)
         demo.launch(share=True)
