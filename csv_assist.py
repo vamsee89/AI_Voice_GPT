@@ -13,6 +13,10 @@ from typing import Optional, Tuple
 API_ENDPOINT = "https://your-domain.com/llama-4-scout-17B-16E-Instruct/v1/chat/completions"
 API_HEADERS = {"Authorization": "Basic cccccccccc", "Content-Type": "application/json"}
 
+# ✅ Always provide a valid empty figure to avoid bool/None schema issues
+EMPTY_FIG = go.Figure()
+EMPTY_FIG.update_layout(template="plotly_white")
+
 
 # ============================================================
 # 🧠  CHATBOT CORE
@@ -23,7 +27,6 @@ class CSVChatbot:
         self.df_info = None
         self.conversation_history = []
 
-    # --------------------------------------------------------
     def load_csv(self, file) -> Tuple[str, str]:
         try:
             path = file.name if hasattr(file, "name") else file
@@ -51,7 +54,6 @@ class CSVChatbot:
             traceback.print_exc()
             return f"❌ Error loading CSV: {e}", "Error loading file"
 
-    # --------------------------------------------------------
     def is_safe_query(self, query: str) -> Tuple[bool, str]:
         patterns = [
             r'import\s+os', r'subprocess', r'eval\s*\(', r'exec\s*\(',
@@ -62,7 +64,6 @@ class CSVChatbot:
                 return False, "⚠️ Potentially unsafe operation detected."
         return True, "Safe"
 
-    # --------------------------------------------------------
     def generate_llm_response(self, query: str) -> str:
         if self.df is None:
             return "Please upload a CSV first."
@@ -99,28 +100,26 @@ class CSVChatbot:
             traceback.print_exc()
             return f"Error contacting API: {str(e)}"
 
-    # --------------------------------------------------------
-    def execute_analysis(self, query: str) -> Tuple[str, Optional[go.Figure]]:
+    def execute_analysis(self, query: str) -> Tuple[str, go.Figure]:
         if self.df is None:
-            return "Please upload a CSV first.", None
+            return "Please upload a CSV first.", EMPTY_FIG
 
         safe, msg = self.is_safe_query(query)
         if not safe:
-            return msg, None
+            return msg, EMPTY_FIG
 
         answer = self.generate_llm_response(query)
         viz_words = ['plot','chart','graph','visual','hist','scatter','bar','line',
                      'box','pie','heatmap','correlation','3d','violin','sunburst']
-        fig = self.auto_plot(query) if any(w in query.lower() for w in viz_words) else None
+        fig = self.auto_plot(query) if any(w in query.lower() for w in viz_words) else EMPTY_FIG
         return answer, fig
 
-    # --------------------------------------------------------
-    def auto_plot(self, query: str) -> Optional[go.Figure]:
+    def auto_plot(self, query: str) -> go.Figure:
         try:
             q = query.lower()
             num_cols = self.df.select_dtypes(include=[np.number]).columns
             cat_cols = self.df.select_dtypes(include=['object']).columns
-            fig = None
+            fig = EMPTY_FIG
 
             if 'hist' in q and len(num_cols):
                 fig = px.histogram(self.df, x=num_cols[0], nbins=30)
@@ -140,13 +139,12 @@ class CSVChatbot:
             elif '3d' in q and len(num_cols) >= 3:
                 fig = px.scatter_3d(self.df, x=num_cols[0], y=num_cols[1], z=num_cols[2])
 
-            if fig:
-                fig.update_layout(template="plotly_white", height=480)
+            fig.update_layout(template="plotly_white", height=480)
             return fig
         except Exception as e:
             print("Plot error:", e)
             traceback.print_exc()
-            return None
+            return EMPTY_FIG
 
 
 # ============================================================
@@ -156,22 +154,22 @@ chatbot = CSVChatbot()
 
 def upload_file(file):
     if file is None:
-        return "Please upload a file", "No file uploaded", [], gr.update(value=None)
+        return "Please upload a file", "No file uploaded", [], gr.update(value=EMPTY_FIG)
     summary, status = chatbot.load_csv(file)
-    return str(summary), str(status), [], gr.update(value=None)
+    return str(summary), str(status), [], gr.update(value=EMPTY_FIG)
 
 def chat(message, history):
     try:
         if chatbot.df is None:
-            return history + [[message, "⚠️ Please upload a CSV file first."]], gr.update(value=None)
+            return history + [[message, "⚠️ Please upload a CSV file first."]], gr.update(value=EMPTY_FIG)
         reply, fig = chatbot.execute_analysis(message)
-        return history + [[message, reply]], fig or gr.update(value=None)
+        return history + [[message, reply]], fig
     except Exception as e:
         traceback.print_exc()
-        return history + [[message, f"❌ Error: {str(e)}"]], gr.update(value=None)
+        return history + [[message, f"❌ Error: {str(e)}"]], gr.update(value=EMPTY_FIG)
 
 def clear_all():
-    return [], gr.update(value=None)
+    return [], gr.update(value=EMPTY_FIG)
 
 
 # ============================================================
@@ -188,7 +186,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="CSV Data Chatbot") as demo:
                                       lines=15, max_lines=20, interactive=True)
         with gr.Column(scale=2):
             chatbot_ui = gr.Chatbot(label="Chat with your Data", height=400, value=[])
-            plot_output = gr.Plot(label="Visualization", value=None)
+            plot_output = gr.Plot(label="Visualization", value=EMPTY_FIG)
             msg_input = gr.Textbox(value="", label="💬 Ask a question",
                                    placeholder="e.g. 'Show histogram of sales'", lines=2)
             with gr.Row():
@@ -207,7 +205,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="CSV Data Chatbot") as demo:
 
 
 # ============================================================
-# 🚀  LOCAL-ONLY LAUNCH (debug on)
+# 🚀  LOCAL-ONLY LAUNCH
 # ============================================================
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", share=False, inbrowser=True, debug=True)
+    demo.launch(server_name="127.0.0.1", share=False, inbrowser=True)
