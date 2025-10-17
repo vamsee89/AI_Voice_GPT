@@ -1,233 +1,191 @@
 import gradio as gr
 import pandas as pd
 import plotly.express as px
-import ollama
-import re, json, os, logging
+import ollama, re, json, os, logging, numpy as np
 
-# ----------------------------
-# CONFIG
-# ----------------------------
-RULES_FILE = "rules.json"
-MODEL_NAME = "mistral"  # your Ollama model
-MAX_HISTORY = 5
-LOG_FILE = "chatbot.log"
+MODEL_NAME   = "mistral"
+RULES_FILE   = "rules.json"
+LOG_FILE     = "chatbot.log"
+MAX_HISTORY  = 5
 
-# ----------------------------
-# LOGGING SETUP
-# ----------------------------
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ----------------------------
-# GLOBAL STATE
-# ----------------------------
 df = None
 conversation_history = []
 custom_rules = {}
 
-# ----------------------------
-# PERSISTENCE HELPERS
-# ----------------------------
+# ---------- Utilities ----------
 def load_rules():
     global custom_rules
     if os.path.exists(RULES_FILE):
-        try:
-            with open(RULES_FILE) as f:
-                custom_rules = json.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load rules: {e}")
-            custom_rules = {}
-
-def save_rules():
-    try:
-        with open(RULES_FILE, "w") as f:
-            json.dump(custom_rules, f, indent=2)
-    except Exception as e:
-        logging.error(f"Failed to save rules: {e}")
-
+        with open(RULES_FILE) as f: custom_rules = json.load(f)
+    else:
+        custom_rules = {}
+def save_rules(): 
+    with open(RULES_FILE, "w") as f: json.dump(custom_rules, f, indent=2)
 load_rules()
 
-# ----------------------------
-# DATA LOADING + CLEANING
-# ----------------------------
-def load_csv(file):
+# ---------- CSV Cleaning ----------
+def clean_csv(file):
     global df, conversation_history
     conversation_history = []
+    na_vals = ["NA","N/A","null","missing","None",""]
+    df_local = pd.read_csv(file.name, low_memory=False, na_values=na_vals)
+    df_local.dropna(axis=0, how="all", inplace=True)
+    df_local.dropna(axis=1, how="all", inplace=True)
+    df_local = df_local.apply(lambda x: x.str.strip() if x.dtype=="object" else x)
+    for c in df_local.columns:
+        if df_local[c].dtype=="object":
+            s=df_local[c].dropna().astype(str)
+            if s.empty: continue
+            num_like=s.str.replace(r"[^0-9\.-]","",regex=True)
+            if num_like.apply(lambda v:v.replace('-','',1).replace('.','',1).isdigit()).mean()>0.5:
+                df_local[c]=pd.to_numeric(num_like,errors="coerce")
+    for c in df_local.columns:
+        if any(k in c.lower() for k in["date","time","timestamp"]):
+            try: df_local[c]=pd.to_datetime(df_local[c],errors="coerce")
+            except: pass
+    before=len(df_local); df_local.drop_duplicates(inplace=True)
+    globals()["df"]=df_local
+    msg=f"✅ Loaded {df_local.shape[0]} rows × {df_local.shape[1]} columns\nColumns: {list(df_local.columns)}"
+    logging.info(msg)
+    return msg
 
-    try:
-        df = pd.read_csv(file.name, low_memory=False)
-    except UnicodeDecodeError:
-        df = pd.read_csv(file.name, encoding="latin1", low_memory=False)
-    except Exception as e:
-        logging.error(f"CSV Load Error: {e}")
-        return f"❌ Failed to load CSV: {e}"
+# ---------- Data Quality ----------
+def data_quality_report():
+    if df is None: return pd.DataFrame({"info":["Upload CSV first."]})
+    rows=[]
+    for c in df.columns:
+        s=df[c]; rows.append({
+            "column":c,"dtype":str(s.dtype),
+            "missing_%":round(s.isna().mean()*100,2),
+            "unique":int(s.nunique(dropna=True))
+        })
+    return pd.DataFrame(rows)
 
-    df.dropna(axis=0, how="all", inplace=True)
-    df.dropna(axis=1, how="all", inplace=True)
-    df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-
-    mixed_columns = []
-    for col in df.columns:
-        sample = df[col].dropna()
-        if len(sample) == 0:
-            continue
-        unique_types = set(type(v) for v in sample.sample(min(50, len(sample))))
-        if len(unique_types) > 1:
-            mixed_columns.append(col)
-            df[col] = pd.to_numeric(df[col].replace('[^0-9\.-]', '', regex=True), errors="coerce")
-
-    summary = f"""
-✅ CSV Loaded and Cleaned  
-📊 Shape: {df.shape[0]} rows × {df.shape[1]} columns  
-⚙️ Mixed-Type Columns Fixed: {mixed_columns if mixed_columns else 'None'}  
-"""
-    logging.info(f"CSV Loaded: {file.name} | Columns: {list(df.columns)}")
-    return summary
-
-# ----------------------------
-# MODEL CALL
-# ----------------------------
+# ---------- LLM helpers ----------
 def ask_llm(prompt):
     try:
-        response = ollama.chat(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}])
-        return response["message"]["content"].strip()
+        r=ollama.chat(model=MODEL_NAME,messages=[{"role":"user","content":prompt}])
+        return r["message"]["content"].strip()
     except Exception as e:
-        logging.error(f"LLM error: {e}")
-        return "❌ LLM call failed."
+        logging.error(e); return "(LLM unavailable)"
 
-# ----------------------------
-# SAFE EXECUTION SANDBOX
-# ----------------------------
 def safe_eval(code, local_vars):
-    try:
-        # Limit builtins for safety
-        safe_globals = {"__builtins__": {"len": len, "min": min, "max": max, "sum": sum}}
-        return eval(code, safe_globals, local_vars)
-    except Exception as e:
-        logging.warning(f"Code execution error: {e}")
-        raise
+    safe_globals={"__builtins__":{"len":len,"min":min,"max":max,"sum":sum,"abs":abs}}
+    return eval(code,safe_globals,local_vars)
 
-# ----------------------------
-# PLOTLY CHART
-# ----------------------------
-def generate_plot(result):
+# ---------- Plot Auto ----------
+def generate_plot_auto(df_res):
+    if df_res is None or not isinstance(df_res,pd.DataFrame) or df_res.empty: return None
+    num=df_res.select_dtypes(include=np.number).columns.tolist()
+    cat=df_res.select_dtypes(exclude=np.number).columns.tolist()
     try:
-        if isinstance(result, pd.Series):
-            r = result.reset_index()
-            r.columns = ["x", "y"]
-            return px.bar(r, x="x", y="y", title="Series Result")
-
-        elif isinstance(result, pd.DataFrame):
-            num_cols = result.select_dtypes(include="number").columns
-            if len(num_cols) >= 2:
-                return px.line(result, x=num_cols[0], y=num_cols[1:], title="Line Plot")
-            elif len(num_cols) == 1:
-                return px.bar(result, x=result.index, y=num_cols[0], title="Bar Plot")
+        if len(cat)>=1 and len(num)>=1:
+            fig=px.bar(df_res,x=cat[0],y=num[0])
+        elif len(num)>=2:
+            fig=px.scatter(df_res,x=num[0],y=num[1])
+        elif len(cat)>=2:
+            if "count" in df_res.columns:
+                fig=px.bar(df_res,x=cat[0],y="count",color=cat[1])
             else:
-                return px.bar(result.head(10))
+                fig=px.histogram(df_res,x=cat[0],color=cat[1])
         else:
-            return None
-    except Exception as e:
-        logging.error(f"Plot Error: {e}")
-        return None
+            fig=None
+        if fig: fig.update_layout(template="plotly_white",height=400)
+        return fig
+    except: return None
 
-# ----------------------------
-# RULE PARSER
-# ----------------------------
-def handle_rule_definition(question):
-    q_lower = question.lower()
-    if "if i say" in q_lower and "use" in q_lower:
-        try:
-            key = question.split("if i say", 1)[1].split(",")[0].strip().lower()
-            rule = question.split("use", 1)[1].strip()
-            custom_rules[key] = rule
-            save_rules()
-            logging.info(f"Rule added: {key} -> {rule}")
-            return f"✅ Remembered this rule for '{key}': {rule}", True
-        except Exception as e:
-            logging.error(f"Rule parse error: {e}")
-            return f"⚠️ Couldn't parse rule: {e}", True
-    return None, False
+# ---------- Rule handler ----------
+def handle_rule_definition(q):
+    if "if i say" in q.lower() and "use" in q.lower():
+        key=q.split("if i say",1)[1].split(",")[0].strip().lower()
+        rule=q.split("use",1)[1].strip()
+        custom_rules[key]=rule; save_rules()
+        return f"✅ Remembered rule for '{key}': {rule}",True
+    return None,False
 
-# ----------------------------
-# MAIN ANALYSIS LOGIC
-# ----------------------------
-def analyze_question(question):
-    global df, conversation_history, custom_rules
+# ---------- Main logic ----------
+def chat_respond(message, history):
+    global df,conversation_history
+    if message.strip()=="":
+        return "Please enter a question."
 
+    # handle upload reference (if no df yet)
     if df is None:
-        return "⚠️ Upload a CSV first.", "", None
+        return "⚠️ Please upload a CSV first using ➕ above."
 
-    # Check if it's a rule definition
-    rule_resp, is_rule = handle_rule_definition(question)
-    if is_rule:
-        return rule_resp, "", None
+    rule_resp,is_rule=handle_rule_definition(message)
+    if is_rule: return rule_resp
 
-    # Build custom rules context
-    rule_context = "\n".join([f"If user asks '{k}', use this logic: {v}" for k, v in custom_rules.items()])
-    context = "\n".join([f"User: {q}\nBot: {a}" for q, a in conversation_history[-MAX_HISTORY:]])
+    rules_txt="\n".join([f"If user asks '{k}', use: {v}" for k,v in custom_rules.items()])
+    context="\n".join([f"User:{q}\nBot:{a}" for q,a in conversation_history[-MAX_HISTORY:]])
 
-    prompt = f"""
-You are a data analyst using pandas DataFrame `df` with columns {list(df.columns)}.
-Custom analytical rules:
-{rule_context}
+    prompt=f"""
+DataFrame df columns: {list(df.columns)}.
+{rules_txt}
 
-Recent context:
+Context:
 {context}
 
-Generate a concise, safe pandas expression using df to answer:
-"{question}"
-
-Do not use imports or print statements. Return only the code.
-    """
-
-    code = ask_llm(prompt)
-    code_line = re.findall(r"(?s)`([^`]*)`", code)
-    if code_line:
-        code = code_line[0]
-    code = code.strip()
+Generate ONE concise pandas expression using df (and pd if needed)
+that returns a DataFrame or Series to answer:
+"{message}"
+Return only the code, no prose.
+"""
+    code=ask_llm(prompt)
+    code=re.sub(r"`+","",code).strip()
 
     try:
-        result = safe_eval(code, {"df": df, "pd": pd})
-        if isinstance(result, (pd.Series, pd.DataFrame)):
-            text_result = result.head(10).to_string()
+        result=safe_eval(code,{"df":df,"pd":pd})
+        if isinstance(result,pd.Series):
+            result=result.reset_index(); result.columns=[f"col_{i}" for i in range(result.shape[1])]
+        if isinstance(result,(list,tuple)): result=pd.DataFrame(result,columns=["result"])
+        if not isinstance(result,pd.DataFrame): result=pd.DataFrame({"result":[str(result)]})
+        fig=generate_plot_auto(result.head(50))
+        text=result.head(10).to_string(index=False)
+
+        summary_prompt=f"""You are a business analyst.
+Here are results:
+{text}
+Summarize key insight(s) in one short paragraph."""
+        summary=ask_llm(summary_prompt)
+        conversation_history.append((message,summary))
+
+        # display table preview under chart
+        if fig:
+            return (gr.update(value=summary, visible=True),
+                    gr.update(value=fig, visible=True),
+                    gr.update(value=result.head(20), visible=True))
         else:
-            text_result = str(result)
-
-        fig = generate_plot(result)
-        conversation_history.append((question, text_result))
-        logging.info(f"Query: {question} | Code: {code}")
-        return text_result, code, fig
+            return (summary,None,result.head(20))
     except Exception as e:
-        logging.warning(f"Execution failed: {e}")
-        return f"❌ Error executing code: {e}", code, None
+        return f"❌ Error executing code: {e}"
 
-# ----------------------------
-# GRADIO UI (v4.19.2 Compatible)
-# ----------------------------
+# ---------- UI ----------
 with gr.Blocks(theme=gr.themes.Soft()) as app:
-    gr.Markdown("## 🧠 Enterprise CSV Data Analyst Chatbot — Secure, Context-Aware, Local LLM")
+    gr.Markdown("## 🤖 Enterprise CSV Data Analyst — Chat Style")
 
     with gr.Row():
-        csv_file = gr.File(label="📂 Upload CSV")
-        load_btn = gr.Button("Load CSV")
-    load_status = gr.Textbox(label="Dataset Info")
+        upload = gr.UploadButton("➕ Upload CSV", file_types=[".csv"], label="Upload")
+        dq_btn = gr.Button("View Data Quality Report")
 
-    with gr.Row():
-        question = gr.Textbox(
-            label="Ask a question or define a rule",
-            placeholder="e.g., Calculate average sales OR If I say calculate NPS, use promoters=9–10, detractors=0–6"
+    dq_table = gr.Dataframe(visible=False, label="Data Quality Report")
+
+    with gr.Tab("Chat"):
+        chatbot = gr.ChatInterface(
+            fn=chat_respond,
+            chatbot=gr.Chatbot(label="Conversation"),
+            textbox=gr.Textbox(placeholder="Ask a question or define a rule..."),
+            title="CSV Analyst Assistant",
+            description="Upload CSV with ➕ above, then ask analytical questions. Click 📤 to send.",
+            theme="soft",
+            submit_btn="📤 Send",
+            stop_btn="⏹ Stop"
         )
-        analyze_btn = gr.Button("Analyze")
 
-    result_box = gr.Textbox(label="🧠 Analytical Answer", lines=10)
-    code_box = gr.Code(label="💡 Generated Pandas Code", language="python")
-    chart_output = gr.Plot(label="📊 Interactive Visualization")
-
-    load_btn.click(load_csv, inputs=csv_file, outputs=load_status)
-    analyze_btn.click(analyze_question, inputs=question, outputs=[result_box, code_box, chart_output])
+    upload.upload(clean_csv, upload, chatbot.chatbot)
+    dq_btn.click(data_quality_report, outputs=dq_table)
 
 app.launch()
